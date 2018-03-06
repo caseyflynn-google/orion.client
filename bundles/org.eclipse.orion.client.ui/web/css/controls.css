@@ -1098,6 +1098,9 @@ html[dir="rtl"] .uploadChooser{ /* ACGC */
 	width: 120px;
 }
 
+.userProfile input.setting-control {
+	width: 300px;
+}
 .local {
 	display: table;
 }
@@ -1114,6 +1117,10 @@ html[dir="rtl"] .uploadChooser{ /* ACGC */
 }
 
 .local .setting-content > div {
+	display: table-row;
+}
+
+.local .setting-content > div > label {
 	display: table-row;
 }
 

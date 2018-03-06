@@ -33,8 +33,9 @@ define([
 	'orion/regex',
 	'orion/PageUtil',
 	'orion/uiUtils',
-	'orion/util'
-], function(messages, i18nUtil, lib, fileUtil, DropDownMenu, Deferred, URITemplate, mCommands, mKeyBinding, mCommandRegistry, mExtensionCommands, mContentTypes, mSearchUtils, objects, mPageUtil, PageLinks, mAnnotations, regex, PageUtil, mUIUtils, util) {
+	'orion/util',
+	'orion/urlModifier'
+], function(messages, i18nUtil, lib, fileUtil, DropDownMenu, Deferred, URITemplate, mCommands, mKeyBinding, mCommandRegistry, mExtensionCommands, mContentTypes, mSearchUtils, objects, mPageUtil, PageLinks, mAnnotations, regex, PageUtil, mUIUtils, util, urlModifier) {
 
 	var exports = {};
 
@@ -52,7 +53,7 @@ define([
 		iframe.type = "text/html"; //$NON-NLS-0$
 		iframe.sandbox = "allow-scripts allow-same-origin allow-forms allow-popups"; //$NON-NLS-0$
 		iframe.frameborder = options.border !== undefined ? options.border : 1;
-		iframe.src = href;
+		iframe.src = urlModifier(href);
 		iframe.className = "delegatedUI"; //$NON-NLS-0$
 		if (options.width) {
 			delegatedParent.style.width = options.width;
@@ -427,12 +428,11 @@ define([
 					if (bindings.length > 0) {
 						for (var j = 0; j < bindings.length; j++) {
 							binding = bindings[j];
-							var bindingString = mUIUtils.getUserKeyString(binding);
 							if (binding.scopeName) {
 								if (!scopes[binding.scopeName]) {
 									scopes[binding.scopeName] = [];
 								}
-								scopes[binding.scopeName].push({bindingString: bindingString, name: actionDescription.name, execute: execute(actionID)});
+								scopes[binding.scopeName].push({binding: binding, name: actionDescription.name, execute: execute(actionID)});
 							} else {
 								keyAssist.createItem(binding, actionDescription.name, actionID, execute(actionID));
 							}
@@ -446,7 +446,7 @@ define([
 						keyAssist.createHeader(scopedBinding);
 						for (var k = 0; k < scopes[scopedBinding].length; k++) {
 							binding = scopes[scopedBinding][k];
-							keyAssist.createItem(binding, binding.name, binding.name, binding.execute);
+							keyAssist.createItem(binding.binding, binding.name, binding.name, binding.execute);
 						}
 					}
 				}

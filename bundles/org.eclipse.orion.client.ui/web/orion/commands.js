@@ -172,6 +172,26 @@ define([
 		// bind name to fragment variable
 		lib.processTextNodes(buttonFragment, {ButtonText: name});
 		parent.appendChild(buttonFragment);
+
+		var trigger = parent.firstChild;
+		var inMenubar = false;
+		var parentNode = parent.parentNode;
+		while(parentNode && (document !== parentNode)) {
+			if (parentNode.getAttribute("role") === "menubar") { //$NON-NLS-0$
+				inMenubar = true;
+				break;
+			}
+			parentNode = parentNode.parentNode;
+		}
+		if (inMenubar) {
+			trigger.setAttribute("role", "menuitem");
+		} else {
+			// menu button
+			if (trigger.tagName.toLowerCase() !== "button") {
+				trigger.setAttribute("role", "button");
+			}
+		}
+
 		var newMenu = parent.lastChild;
 		var menuButton;
 		var dropdownArrow;
@@ -201,6 +221,7 @@ define([
 		}
 		menuButton.dropdown = new Dropdown.Dropdown({
 			dropdown: newMenu, 
+			name: name,
 			populate: populateFunction,
 			selectionClass: selectionClass,
 			skipTriggerEventListeners: !!dropdownArrow,
@@ -224,6 +245,7 @@ define([
 		var itemParent = parent.lastChild;
 		var checkbox = lib.$(".checkedMenuItem", itemParent); //$NON-NLS-0$
 		checkbox.checked = checked;
+		checkbox.setAttribute("aria-checked", checked);
 		checkbox.addEventListener("change", onChange, false); //$NON-NLS-0$
 		return checkbox;
 	}
@@ -739,17 +761,23 @@ define([
 			choices.forEach(function(choice) {
 				if (choice.name) {
 					var itemNode = document.createElement("li"); //$NON-NLS-0$
-					itemNode.setAttribute("role", "none");
+					itemNode.setAttribute("role", "none"); //$NON-NLS-0$ //$NON-NLS-1$
 					parent.appendChild(itemNode);
 					var node = document.createElement("span"); //$NON-NLS-0$
-					node.tabIndex = 0; 
-					node.setAttribute("role", "menuitem");  //$NON-NLS-2$ //$NON-NLS-1$
+					node.tabIndex = -1; 
 					node.classList.add("dropdownMenuItem"); //$NON-NLS-0$
+					node.style.outline = "none";
 					if (addCheck) {
+						node.setAttribute("role", "menuitemradio");  //$NON-NLS-1$ //$NON-NLS-0$
+						node.setAttribute("aria-checked", choice.checked ? "true" : "false"); //$NON-NLS-2$ //$NON-NLS-1$ //$NON-NLS-0$
 						var check = document.createElement("span"); //$NON-NLS-0$
 						check.classList.add("check"); //$NON-NLS-0$
+						check.setAttribute("role", "none"); //$NON-NLS-0$ //$NON-NLS-1$
+						check.setAttribute("aria-hidden", "true");  //$NON-NLS-1$ //$NON-NLS-0$
 						check.appendChild(document.createTextNode(choice.checked ? "\u25CF" : "")); //$NON-NLS-1$ //$NON-NLS-0$
 						node.appendChild(check);
+					} else {
+						node.setAttribute("role", "menuitem");  //$NON-NLS-1$ //$NON-NLS-0$
 					}
 					if (choice.imageClass) {
 						var image = document.createElement("span"); //$NON-NLS-0$

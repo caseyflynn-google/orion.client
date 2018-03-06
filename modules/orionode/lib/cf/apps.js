@@ -86,7 +86,7 @@ function respondAppGetRequest(resp,task){
 }
 function getAppwithoutName(req, task, appTarget){
 	var appsArray = [];
-	target.cfRequest("GET", req.user.username, appTarget.Url + appTarget.Space.entity.apps_url, {"inline-relations-depth":"2"}, null, null, null, appTarget)
+	return target.cfRequest("GET", req.user.username, appTarget.Url + appTarget.Space.entity.apps_url, {"inline-relations-depth":"2"}, null, null, null, appTarget)
 	.then(function(result){
 		var appResources = result.resources;
 		for(var k = 0; k < appResources.length; k++){
@@ -347,7 +347,7 @@ function respondAppPutRequest(task,status){
 		metadata:theApp.appMetadata	
 	};
 	if(status === "RUNNING"){
-		var DEFAULT_TIMEOUT = 60;
+		var DEFAULT_TIMEOUT = 180;
 		resp = {
 			"App":appJson,
 			"DeployedPackage":theApp.appPackageType || "unknown",
@@ -375,7 +375,7 @@ function respondAppPutRequest(task,status){
 function startApp(userId, userTimeout ,appTarget){
 	expireAppCache(appTarget, theApp.appName);
 	
-	var DEFAULT_TIMEOUT = 60;
+	var DEFAULT_TIMEOUT = 180;
 	var MAX_TIMEOUT = 180;
 	var body = {"console":true, "state":"STARTED"};
 	logger.debug("Starting application=" + theApp.appName);
@@ -500,7 +500,7 @@ function createApp(req, appTarget){
 			"space_guid": appTarget.Space.metadata.guid,
 			"name":theApp.appName,
 			"instances": Number(theApp.manifest.applications[0].instances) || 1,
-			"buildPack":theApp.manifest.applications[0].buildpack || null,
+			"buildpack":theApp.manifest.applications[0].buildpack || null,
 			"command":theApp.manifest.applications[0].command,
 			"memory": normalizeMemoryMeasure(theApp.manifest.applications[0].memory),
 			"stack_guid":stackGuid,
@@ -527,7 +527,7 @@ function updateApp(req, appTarget){
 		var body = {
 			"name":theApp.appName,
 			"instances":theApp.manifest.applications[0].instances || 1,
-			"buildPack":theApp.manifest.applications[0].buildpack || null,
+			"buildpack":theApp.manifest.applications[0].buildpack || null,
 			"command":theApp.manifest.applications[0].command,
 			"memory": normalizeMemoryMeasure(theApp.manifest.applications[0].memory),
 			"stack_guid":stackGuid,
@@ -767,7 +767,17 @@ function bindServices(req, appTarget){
 					async.each(manifestService, function(service, cb) {
 						return getServiceGuid(req.user.username, service, appTarget)
 						.then(function(serviceInstanceGUID){
-							return bindService(req.user.username, serviceInstanceGUID, appTarget);
+							if (!serviceInstanceGUID) {
+								return Promise.reject(new Error("Service instance " + service + " cannot be found in target space"));
+							}
+							return bindService(req.user.username, serviceInstanceGUID, appTarget)
+							.catch(function(err) {
+								/* the binding might be already present - detect it by checking the error code type */
+								if (err.data && (!err.data.error_code || "CF-ServiceBindingAppServiceTaken" === err.data.error_code)) {
+									return;
+								}
+								return Promise.reject(err);
+							});
 						}).then(function(){
 							return cb();
 						})

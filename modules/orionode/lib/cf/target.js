@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2016, 2017 IBM Corporation and others.
+ * Copyright (c) 2016, 2018 IBM Corporation and others.
  * All rights reserved. This program and the accompanying materials are made 
  * available under the terms of the Eclipse Public License v1.0 
  * (http://www.eclipse.org/legal/epl-v10.html), and the Eclipse Distribution 
@@ -20,6 +20,20 @@ var LRU = require("lru-cache-for-clusters-as-promised");
 
 // Caching for already located targets
 var targetCache = new LRU({max: 10000, maxAge: 1800000, namespace: "target"});
+/**
+ * UTILITY
+ * @param {{?}} body The JSON body to parse
+ */
+function parsebody(body){
+	var result;
+	try {
+		result = typeof body === "string" ? JSON.parse(body): body;
+	} catch(err) {
+		result = body;
+	}
+	return result;
+}
+module.exports.parsebody = parsebody;
 
 module.exports.router = function(options) {
 	if(options.configParams.get("cf.bearer.token.store")) {
@@ -27,7 +41,6 @@ module.exports.router = function(options) {
 	}
 	
 	module.exports.getAccessToken = getAccessToken;
-	module.exports.parsebody = parsebody;
 	module.exports.computeTarget = computeTarget;
 	module.exports.cfRequest = cfRequest;
 	module.exports.caughtErrorHandler = caughtErrorHandler;
@@ -125,35 +138,34 @@ function computeTarget(userId, targetRequest){
 				return value;
 			}
 			return orgs.getOrgsRequest(userId, targetRequest)
-			.then(function(OrgsArray){	
+			.then(function(orgs) {
+				var org, space;
 				if(!targetRequest.Org){
-					var org = OrgsArray.completeOrgsArray[0];
-				}else{
-					var aimedOrg = OrgsArray.completeOrgsArray.find(function(org){
+					org = orgs[0];
+				} else {
+					org = orgs.find(function(org){
 						return org.entity.name === targetRequest.Org || org.metadata.guid === targetRequest.Org;
 					});
-					org = aimedOrg;
 				}
 				if (!org) {
 					return Promise.reject(new Error("Organization not found"));
 				}
 				if(!targetRequest.Space){
-					var space = org.Spaces[0];
-				}else{
-					var aimedSpace = org.Spaces.find(function(space){
+					space = org.spaces[0];
+				} else {
+					space = org.spaces.find(function(space){
 						return space.entity.name === targetRequest.Space || space.metadata.guid === targetRequest.Space;
 					});
-					space = aimedSpace;
 				}
-				delete org.Spaces;
-				
+				if (!space) {
+					return Promise.reject(new Error("Space not found"));
+				}
 				var target = {
 					"Type": "Target",
 					"Url": targetRequest.Url,
 					"Org": org,
-					"Space":space
+					"Space": space
 				};
-				
 				var putKey = userId + targetRequest.Url + org.entity.name + space.entity.name;
 				time = Date.now();
 				return targetCache.set(putKey, target)
@@ -187,7 +199,7 @@ function caughtErrorHandler(task, err){
 		DetailedMessage: err.detailMessage || err.message,
 		JsonData: err.data || {},
 		Message: err.message,
-		Severity: "Error"
+		Severity: err.severity || "Error"
 	};
 	//properly handle parse errors from the YAML parser
 	if(err.name && err.name === 'YAMLException') {
@@ -202,15 +214,7 @@ function caughtErrorHandler(task, err){
 	}
 	task.done(errorResponse);
 }
-function parsebody(body){
-	var result;
-	try{
-		result = typeof body === "string" ? JSON.parse(body): body;
-	}catch(err){
-		result = body;
-	}
-	return result;
-}
+
 function cfRequest (method, userId, url, query, body, headers, requestHeader, target) {
 	var waitFor;
 	if(!requestHeader){

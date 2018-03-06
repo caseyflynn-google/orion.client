@@ -1,6 +1,6 @@
 /*******************************************************************************
  * @license
- * Copyright (c) 2017 IBM Corporation and others.
+ * Copyright (c) 2017, 2018 IBM Corporation and others.
  * All rights reserved. This program and the accompanying materials are made 
  * available under the terms of the Eclipse Public License v1.0 
  * (http://www.eclipse.org/legal/epl-v10.html), and the Eclipse Distribution 
@@ -55,7 +55,12 @@ define([
 						if (typeof hoverContents === 'string' && hoverContents.length === 0) {
 							return new Deferred().resolve('');
 						}
-						hover.content = result.contents[0];
+						if (typeof result.contents[0] === 'object') {
+							// this must be a MarkedString with { language: string, value: string }
+							hover.content = result.contents[0].value;
+						} else {
+							hover.content = result.contents[0];
+						}
 					} else if (typeof result.contents === 'string') {
 						if (result.contents.length === 0) {
 							return new Deferred().resolve('');
@@ -453,6 +458,8 @@ define([
 		} else if (item.textEdit) {
 			convertPositions(deferred, editorContext, item, proposal);
 		} else {
+			// let Orion calculate it, see escapePosition() in actions.js
+			delete proposal.escapePosition;
 			deferred.resolve(proposal);
 		}
 		return deferred;

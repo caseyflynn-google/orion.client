@@ -233,6 +233,7 @@ define("orion/editor/linkedMode", [
 				
 				// Cancel this modification and apply same modification to all positions in changing group
 				this.ignoreVerify = true;
+				var delta = 0;
 				for (i = sortedPositions.length - 1; i >= 0; i--) {
 					pos = sortedPositions[i];
 					if (pos.model === model && pos.group === changed.group) {
@@ -241,9 +242,11 @@ define("orion/editor/linkedMode", [
 							text = evnt.text[i];
 						}
 						this.editor.setText(text, pos.oldOffset + deltaStart , pos.oldOffset + deltaEnd, false);
+						delta = pos.oldOffset <= evnt.start ? delta + changeCount : delta;
 					}
 				}
 				this.ignoreVerify = false;
+				this.editor.setCaretOffset(evnt.end + delta);
 				evnt.text = null;
 				this._updateAnnotations(sortedPositions);
 			}.bind(this)
@@ -266,7 +269,7 @@ define("orion/editor/linkedMode", [
 			return bindings;
 		},
 		/**
-		 * Starts Linked Mode, selects the first position and registers the listeners.
+		 * Starts Linked Mode and registers the listeners.
 		 * @param {Object} linkedModeModel An object describing the model to be used by linked mode.
 		 * Contains one or more position groups. If a position in a group is edited, the other positions in
 		 * the same group are edited the same way. The model structure is as follows:
@@ -316,7 +319,15 @@ define("orion/editor/linkedMode", [
 				this.linkedModeModel.nextModel = linkedModeModel;
 			}
 			this.linkedModeModel = linkedModeModel;
-			this.selectLinkedGroup(0);
+			var select = true;
+			var caretOffset = this.editor.getCaretOffset();
+			linkedModeModel.groups[0].positions.some(function(p) {
+				if (p.offset <= caretOffset && caretOffset <= p.offset + p.length) {
+					select = false;
+					return true;
+				}
+			});
+			this.selectLinkedGroup(0, select);
 		},
 		/** 
 		 * Exits Linked Mode. Optionally places the caret at linkedMode escapePosition. 
@@ -399,15 +410,18 @@ define("orion/editor/linkedMode", [
 		/**
 		 * @description Selects the group of the given index from the currently active model
 		 * @param {Number} index The group index to select
+		 * @param {Boolean} [selectText=true] whether the group text should be selected
 		 */
-		selectLinkedGroup: function(index) {
+		selectLinkedGroup: function(index, selectText) {
 			var model = this.linkedModeModel;
 			if (model) {
 				model.selectedGroupIndex = index;
 				var group = model.groups[index];
 				var position = group.positions[0];
 				var editor = this.editor;
-				editor.setSelection(position.offset, position.offset + position.length);
+				if (selectText === undefined || selectText) {
+					editor.setSelection(position.offset, position.offset + position.length);
+				}
 				var contentAssist = this.contentAssist;
 				if (contentAssist) {
 					contentAssist.offset = undefined;

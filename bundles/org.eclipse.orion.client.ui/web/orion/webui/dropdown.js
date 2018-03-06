@@ -54,6 +54,9 @@ define(['orion/webui/littlelib', 'orion/EventTarget'], function(lib, EventTarget
 		_init: function(options) {
 			this._dropdownNode = lib.node(options.dropdown);
 			if (!this._dropdownNode) { throw "no dom node for dropdown found"; } //$NON-NLS-0$
+			if (options.name) {
+				this._dropdownNode.setAttribute("aria-label", options.name);
+			}
 			this._populate = options.populate;
 			this._selectionClass = options.selectionClass;
 			this._parentDropdown = options.parentDropdown;
@@ -70,8 +73,7 @@ define(['orion/webui/littlelib', 'orion/EventTarget'], function(lib, EventTarget
 					parentNode = parentNode.parentNode;
 				}
 			}
-			
-			this._dropdownNode.tabIndex = 0;
+			this._dropdownNode.tabIndex = -1;
 
 			if (options.triggerNode) {
 				this._triggerNode = options.triggerNode;
@@ -96,13 +98,20 @@ define(['orion/webui/littlelib', 'orion/EventTarget'], function(lib, EventTarget
 			}.bind(this);
 			
 			if (!options.skipTriggerEventListeners) {
-				// click on trigger opens or toggles.
+				// click on trigger opens or closes.
 				this._triggerNode.addEventListener("click", triggerClickHandler, false); //$NON-NLS-0$
 
-				// if trigger node is not key enabled...
+				// if trigger node is not key enabled, then add key handler for ENTER, SPACE and DOWN arrow
 				if (this._triggerNode.tagName.toLowerCase() === "span") { //$NON-NLS-0$
 					this._triggerNode.addEventListener("keydown", function(event) { //$NON-NLS-0$
 						if (event.keyCode === lib.KEY.ENTER || event.keyCode === lib.KEY.SPACE) {
+							triggerClickHandler(event);
+						}
+					}.bind(this), false);
+				} else {
+					// add key handler for DOWN arrow
+					this._triggerNode.addEventListener("keydown", function(event) { //$NON-NLS-0$
+						if (event.keyCode === lib.KEY.DOWN) {
 							triggerClickHandler(event);
 						}
 					}.bind(this), false);
@@ -130,7 +139,7 @@ define(['orion/webui/littlelib', 'orion/EventTarget'], function(lib, EventTarget
 					var mbItems = menuBar.dropdown.getItems();
 					for (var i = 0; i < mbItems.length; i++) {
 						var mbItem = mbItems[i];
-						if (mbItem.classList.contains("dropdownTriggerOpen")) {
+						if (mbItem.classList.contains("dropdownTriggerOpen")) { //$NON-NLS-0$
 							openMBItem = mbItem;
 						}
 					}
@@ -170,7 +179,7 @@ define(['orion/webui/littlelib', 'orion/EventTarget'], function(lib, EventTarget
 		 */			
 		toggle: function(mouseEvent /* optional */) {
 			if (this.isVisible()) {
-				return this.close();
+				return this.close(true);
 			}
 			return this.open(mouseEvent);
 		},
@@ -202,6 +211,7 @@ define(['orion/webui/littlelib', 'orion/EventTarget'], function(lib, EventTarget
 					this._boundAutoDismiss = this._autoDismiss.bind(this);
 
 					this._triggerNode.classList.add("dropdownTriggerOpen"); //$NON-NLS-0$
+					this._triggerNode.setAttribute("aria-expanded", "true"); //$NON-NLS-1$ //$NON-NLS-0$
 					if (this._selectionClass) {
 						this._triggerNode.classList.add(this._selectionClass);
 					}
@@ -311,6 +321,7 @@ define(['orion/webui/littlelib', 'orion/EventTarget'], function(lib, EventTarget
 			var actionTaken = false;
 			if (this.isVisible()) {
 				this._triggerNode.classList.remove("dropdownTriggerOpen"); //$NON-NLS-0$
+				this._triggerNode.setAttribute("aria-expanded", "false"); //$NON-NLS-1$ //$NON-NLS-0$
 				if (this._selectionClass) {
 					this._triggerNode.classList.remove(this._selectionClass);
 				}
@@ -340,14 +351,19 @@ define(['orion/webui/littlelib', 'orion/EventTarget'], function(lib, EventTarget
 		 *
 		 */
 		getItems: function() {
-			var items = lib.$$array("li:not(.dropdownSeparator) > [role='menuitem']", this._dropdownNode, true); //$NON-NLS-0$
+			var items = lib.$$array("li:not(.dropdownSeparator) [role^='menuitem']", this._dropdownNode, true); //$NON-NLS-0$
 			// We only want the direct li children, not any descendants.  But we can't preface a query with ">"
 			// So we do some reachy filtering here.
 			var filtered = [];
 			var self = this;
 			items.forEach(function(item) {
-				if (item.parentNode.parentNode === self._dropdownNode) {
-					filtered.push(item);
+				var menuitem = item;
+				if (menuitem.parentNode.tagName.toLowerCase() === "label") {
+					// if the parent is a label, go up one more (this can happen with input menu items, such as checkbox)
+					menuitem = item.parentNode;
+				}
+				if (menuitem.parentNode.parentNode === self._dropdownNode) {
+					filtered.push(menuitem);
 				}
 			});
 			
@@ -374,7 +390,7 @@ define(['orion/webui/littlelib', 'orion/EventTarget'], function(lib, EventTarget
 		 */
 		 _dropdownKeyDown: function(event) {
 		 	if (event.keyCode === lib.KEY.TAB) {
-		 		if (this._selectedItem) {
+		 		if (this._selectedItem || this._isVisible) {
 		 			var keepIterating = true;
 		 			while (keepIterating) {
 						keepIterating = this.close(true);
@@ -385,7 +401,7 @@ define(['orion/webui/littlelib', 'orion/EventTarget'], function(lib, EventTarget
 		 		}
 		 		return;  // Allow the TAB to propagate
 		 	}
-			if (event.keyCode === lib.KEY.UP || event.keyCode === lib.KEY.DOWN || event.keyCode === lib.KEY.RIGHT || event.keyCode === lib.KEY.ENTER || event.keyCode === lib.KEY.LEFT) {
+			if (event.keyCode === lib.KEY.UP || event.keyCode === lib.KEY.DOWN || event.keyCode === lib.KEY.RIGHT || event.keyCode === lib.KEY.LEFT || event.keyCode === lib.KEY.ENTER || event.keyCode === lib.KEY.SPACE) {
 				var items = this.getItems();
 				var isMenuBar = this._dropdownNode.getAttribute("role") === "menubar";
 				if (items.length && items.length > 0) {
@@ -396,18 +412,16 @@ define(['orion/webui/littlelib', 'orion/EventTarget'], function(lib, EventTarget
 							index = items.indexOf(this._selectedItem.parentNode);
 						}
 						if (index >= 0) {
-							if (event.keyCode === lib.KEY.UP && !isMenuBar) {
-								if (index > 0) {
-									index--;
-									this._selectItem(items[index]);
-								} else if (this._triggerNode) {
-									var parentMenu = this._triggerNode.parentNode.parentNode;
-									if (parentMenu.getAttribute("role") === "menubar") {
-										this.close(true);
-										if (this._parentDropdown) {
-											this._parentDropdown._dropdownNode.focus();
-										}
+							if (event.keyCode === lib.KEY.UP) {
+								if (isMenuBar) {
+									if (this._selectedItem.classList.contains("dropdownTrigger") && this._selectedItem.dropdown) { //$NON-NLS-0$
+										var dropdown = this._selectedItem.dropdown;
+										dropdown.open();
+										var menuitems = dropdown.getItems();
+										dropdown._selectItem(menuitems[menuitems.length - 1]); // select last item in submenu
 									}
+								} else {
+									this._selectItem(items[index > 0 ? index - 1 : items.length - 1]);
 								}
 							} else if (event.keyCode === lib.KEY.DOWN) {
 								if (isMenuBar) {
@@ -416,48 +430,50 @@ define(['orion/webui/littlelib', 'orion/EventTarget'], function(lib, EventTarget
 										this._selectedItem.dropdown._selectItem(); // select first item in submenu
 									}
 								} else {
-									if (index < items.length - 1) {
-										index++;
-										this._selectItem(items[index]);
-									}
+									this._selectItem(items[index < items.length - 1 ? index + 1 : 0]);
 								}
 							} else if (event.keyCode === lib.KEY.RIGHT) {
 								if (isMenuBar) {
-									if (index < items.length - 1) {
-										index++;
-										this._selectItem(items[index]);
-									}
+									this._selectItem(items[index < items.length - 1 ? index + 1 : 0]);
 								} else {
 									if (this._selectedItem.classList.contains("dropdownTrigger") && this._selectedItem.dropdown) { //$NON-NLS-0$
 										this._selectedItem.dropdown.open();
 										this._selectedItem.dropdown._selectItem(); // select first item in submenu
+									} else {
+										this._closeThenOpen(this._selectedItem, event.keyCode, true);
 									}
 								}
-							} else if (event.keyCode === lib.KEY.ENTER) {
+							} else if (event.keyCode === lib.KEY.LEFT) {
+								if (isMenuBar) {
+									this._selectItem(items[index > 0 ? index - 1 : items.length - 1]);
+								} else {
+									if (this._parentDropdown) {
+										this.close(true);
+										this._parentDropdown._dropdownNode.focus();
+									} else {
+										this._closeThenOpen(this._selectedItem, event.keyCode, true);
+									}
+								}
+							} else if (event.keyCode === lib.KEY.ENTER || event.keyCode === lib.KEY.SPACE) {
 								if (this._selectedItem.classList.contains("dropdownTrigger") && this._selectedItem.dropdown) { //$NON-NLS-0$
 									this._selectedItem.dropdown.open();
 									this._selectedItem.dropdown._selectItem(); // select first item in submenu
 								} else {
 									this._selectedItem.click();
-								}
-							} else if (event.keyCode === lib.KEY.LEFT) {
-								if (isMenuBar) {
-									if (index > 0) {
-										index--;
-										this._selectItem(items[index]);
-									}
-								} else {
-									if (this._selectedItem.parentNode.parentNode.classList.contains("dropdownMenuOpen")) { //$NON-NLS-0$
-										this.close(true);
-										if (this._parentDropdown) {
-											this._parentDropdown._dropdownNode.focus();
-										}
-									}
+									// click handling auto closes menus without restoring focus to trigger, so need to restore here
+									this._triggerNode.focus();
 								}
 							}
 						}
 					} else {
-						this._selectItem(items[0]);	
+						if (event.keyCode === lib.KEY.UP) {
+							this._selectItem(items[items.length - 1]); // select last item in menu
+						} else if (event.keyCode === lib.KEY.RIGHT || event.keyCode === lib.KEY.LEFT) {
+							this._closeThenOpen(this._triggerNode, event.keyCode, false);
+						} else {
+							// DOWN, ENTER, or SPACE: select first item in menu
+							this._selectItem(items[0]);
+						}
 					}
 					lib.stop(event);
 				}
@@ -471,11 +487,47 @@ define(['orion/webui/littlelib', 'orion/EventTarget'], function(lib, EventTarget
 		 },
 		 
 		 /**
+		  * Closes the menu containing the specified item
+		  * and opens the menu next to it in the specified direction.
+		  * @param {Object} item An item within a menu
+		  * @param {Integer} direction Either KEY.RIGHT or KEY.LEFT typed by user
+		  * @param {Boolean} select If true, select the first item
+		  */
+		 _closeThenOpen: function(item, direction, select) {
+			while (item.parentNode.getAttribute("role") !== "menubar")  {
+				item = item.parentNode;
+			}
+			var trigger = item.childNodes[0];
+			var menuBar = item.parentNode;
+			var mbItems = menuBar.dropdown.getItems();
+			var mbItem = null;
+			for (var i = 0; i < mbItems.length; i++) {
+				if (mbItems[i] === trigger) {
+					if (direction === lib.KEY.LEFT) {
+						mbItem = i > 0 ? mbItems[i - 1] : mbItems[mbItems.length - 1];
+					} else {
+						mbItem = i < mbItems.length - 1 ? mbItems[i + 1] : mbItems[0];
+					}
+					break;
+				}
+			}
+			trigger.dropdown._closeSelectedSubmenu();
+			trigger.dropdown.close(false);
+			if (mbItem) {
+				mbItem.dropdown.open();
+				if (select) {
+					mbItem.dropdown._selectItem();
+				}
+
+			}
+		 },
+		 
+		 /**
 		  * Selects the specified dropdown menu item or the first
 		  * dropdown menu item if none is specified.
 		  * @param {Object} item The dropdown menu item that should be selected. See @ref getItems() for details. Optional.
 		  */
-		 _selectItem: function(item){
+		 _selectItem: function(item) {
 		 	var itemToSelect = item || this.getItems()[0];
 		 	if (itemToSelect) {
 		 		if (this._selectedItem) {
@@ -483,6 +535,7 @@ define(['orion/webui/littlelib', 'orion/EventTarget'], function(lib, EventTarget
 			 	}
 			 	this._selectedItem = itemToSelect;
 			 	this._selectedItem.classList.add("dropdownMenuItemSelected"); //$NON-NLS-0$	
+			 	this._selectedItem.focus();
 			 	if (this._buttonsAdded) {
 			 		var itemBounds = this._selectedItem.getBoundingClientRect();
 			 		var menuBounds = this._dropdownNode.getBoundingClientRect();
@@ -500,11 +553,6 @@ define(['orion/webui/littlelib', 'orion/EventTarget'], function(lib, EventTarget
 		 			}
 		 			updateScrollButtonVisibility.call(this);
 				}
-		 	}
-		 	if (document.activeElement !== this._dropdownNode) {
-		 		// ensure that the dropdown node has the focus in 
-		 		// order for keydown events to be handled properly
-		 		this._dropdownNode.focus();
 		 	}
 		 },
 		 
@@ -570,9 +618,10 @@ define(['orion/webui/littlelib', 'orion/EventTarget'], function(lib, EventTarget
 		innerNodeType = innerNodeType === undefined ? "span" : innerNodeType; //$NON-NLS-0$
 	 	
 	 	var element = document.createElement(innerNodeType); //$NON-NLS-0$
-		//element.tabIndex = 0;
 		element.className = "dropdownMenuItem"; //$NON-NLS-0$
 		element.setAttribute("role", "menuitem");  //$NON-NLS-0$ //$NON-NLS-1$
+		element.tabIndex = -1;
+		element.style.outline = "none";
 		
 		if (text) {
 			var span = document.createElement("span");  //$NON-NLS-0$
@@ -582,7 +631,7 @@ define(['orion/webui/littlelib', 'orion/EventTarget'], function(lib, EventTarget
 		}
 	 	
 	 	var li = document.createElement("li"); //$NON-NLS-0$
-	 	li.setAttribute("role", "none");
+	 	li.setAttribute("role", "none"); //$NON-NLS-0$ //$NON-NLS-1$
 	 	li.appendChild(element); //$NON-NLS-0$
 		
 		return li;

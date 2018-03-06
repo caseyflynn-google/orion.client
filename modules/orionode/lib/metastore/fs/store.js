@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2016, 2017 IBM Corporation and others.
+ * Copyright (c) 2016, 2018 IBM Corporation and others.
  * All rights reserved. This program and the accompanying materials are made 
  * available under the terms of the Eclipse Public License v1.0 
  * (http://www.eclipse.org/legal/epl-v10.html), and the Eclipse Distribution 
@@ -8,8 +8,7 @@
  * Contributors:
  *	 IBM Corporation - initial API and implementation
  *******************************************************************************/
-var
-    nodePath = require('path'),
+const nodePath = require('path'),
     Promise = require('bluebird'),
     fs = Promise.promisifyAll(require('fs')),
     mkdirpAsync = Promise.promisify(require('mkdirp')),
@@ -17,32 +16,46 @@ var
     accessRights = require('../../accessRights'),
     os = require('os'),
 	log4js = require('log4js'),
+	rimraf = require('rimraf'),
 	logger = log4js.getLogger("metastore"),
     fileLocker = require('../../util/fileLocker'),
-    cryptoUtil = require('../../util/cryptoUtil');
+	cryptoUtil = require('../../util/cryptoUtil'),
+	passport = require('passport'),
+	LocalStrategy = require('passport-local').Strategy;
 
-// Helper functions
-var FILENAME_METASTORE = "metastore.json";
-var FILENAME_TASKS_TEMP_DIR = "temp";
-var FILENAME_USER_METADATA = "user.json";
-var KEY_ORION_DESCRIPTION = "OrionDescription";
-var KEY_ORION_VERSION = "OrionVersion";
-var WORKSPACE_ID = "anonymous-OrionContent";
-var DEFAULT_WORKSPACE_NAME = "OrionContent";
-var SERVERWORKSPACE = "${SERVERWORKSPACE}";
-var DESCRIPTION_METASTORE = "This JSON file is at the root of the Orion metadata store responsible for persisting user, workspace and project files and metadata.";
+const FILENAME_METASTORE = "metastore.json",
+	FILENAME_TASKS_TEMP_DIR = "temp",
+	FILENAME_USER_METADATA = "user.json",
+	KEY_ORION_DESCRIPTION = "OrionDescription",
+	KEY_ORION_VERSION = "OrionVersion",
+	WORKSPACE_ID = "anonymous-OrionContent",
+	DEFAULT_WORKSPACE_NAME = "OrionContent",
+	SERVERWORKSPACE = "${SERVERWORKSPACE}",
+	DESCRIPTION_METASTORE = "This JSON file is at the root of the Orion metadata store responsible for persisting user, workspace and project files and metadata.";
 
 // The current version of the Simple Meta Store.
-var VERSION = 8;
+const VERSION = 8;
 
 function getUserRootLocation(options, userId) {
 	return options.configParams.get('orion.single.user') ? nodePath.join(options.configParams.get('orion.single.user.metaLocation') || os.homedir(), '.orion') : nodePath.join.apply(null, metaUtil.readMetaUserFolder(options.workspaceDir, userId));
 }
 
+/**
+ * Returns the fully qualified file path of the metadata for the given user. Returns null if no user
+ * is provided
+ * @param {{?}} options The options map
+ * @param {string|{?}} user The user id or map of user options
+ */
 function getUserMetadataFileName(options, user) {
-	var userId = typeof user === "string" ? user : user.username;
-	var metadataFolder = getUserRootLocation(options, userId);
-	return nodePath.join(metadataFolder, FILENAME_USER_METADATA);
+	let userId;
+	if(typeof user === "string") {
+		userId = user;
+	} else if(user && typeof user.username === 'string') {
+		userId = user.username;
+	} else {
+		return null;
+	}
+	return nodePath.join(getUserRootLocation(options, userId), FILENAME_USER_METADATA);
 }
 
 function getWorkspaceMetadataFileName(options, workspaceId) {
@@ -92,14 +105,42 @@ function readJSON(fileName) {
 	});
 }
 
+/**
+ * Validates the given password against the one from the user info. The Password in the user info is expected to be 
+ * in the standard form: `info: {properties: {Password: encrypted}}`
+ * @param {string} given The password to test
+ * @param {{?}} userInfo The standard user information object
+ * @since 18.0
+ */
+function validatePassword(given, userInfo) {
+	if(userInfo && userInfo.properties) {
+		const encryptedPw = userInfo.properties.Password;
+		if(typeof encryptedPw === 'string') {
+			const pw = cryptoUtil.decrypt(encryptedPw, "");
+			return typeof pw === 'string' && pw === given;
+		}
+	}
+	return false;
+}
+
+/**
+ * Creates a new filesystem-based metastore
+ * @param {{?}} options The map of server options
+ */
 function FsMetastore(options) {
 	this._options = options;
 	this._taskList = {};
 	this._lockMap = {};
-	this._isSingleUser = options.configParams.get('orion.single.user');
+	this._isSingleUser = !!options.configParams.get('orion.single.user');
+	this._isFormAuthType = options.configParams.get('orion.auth.name') === 'FORM+OAuth';
 }
 
-FsMetastore.prototype.lock = function(userId, shared) {
+/**
+ * Acquires a lock for the given user ID
+ * @param {string} userId The user ID
+ * @param {boolean} shared If the lock should be shared or not
+ */
+FsMetastore.prototype.lock = function lock(userId, shared) {
 	var promise = new Promise(function(resolve, reject) {
 		var locker = this._lockMap[userId];
 		if (!locker) {
@@ -120,82 +161,85 @@ FsMetastore.prototype.lock = function(userId, shared) {
 	});
 };
 
-FsMetastore.prototype.setup = function(options) {
+/**
+ * Sets up the metastore
+ * @param {{?}} options The map of server options
+ */
+FsMetastore.prototype.setup = function setup(options) {
 	if (!this._isSingleUser) {
+		if(this._isFormAuthType) {
+			passport.use(new LocalStrategy(
+				function(username, password, done) {
+					this.getUser(username, function(err, userInfo) {
+						if (err) { 
+							return done(err);
+						}
+						if (!userInfo) {
+							return done(null, false, { message: 'Incorrect username.' });
+						}
+						if (!validatePassword(password, userInfo)) {
+							return done(null, false, { message: 'Incorrect password.' });
+						}
+						return done(null, userInfo);
+					});
+				}.bind(this)
+			));
+			passport.serializeUser(function(user, done) {
+				done(null, user.username); 
+			});
+			passport.deserializeUser(function(id, done) {
+				this.getUser(id, function(err, userInfo) {
+					done(null, userInfo);
+				});
+			}.bind(this));
+		}
+		metaUtil.initializeAdminUser(options, this);
 		/* verify that existing metadata in this workspace will be usable by this server */
-		var path = nodePath.join(this._options.workspaceDir, FILENAME_METASTORE);
-		fs.readFileAsync(path, 'utf8').then(
-			function(content) {
-				var json = JSON.parse(content);
-				var metaVersion = parseInt(json[KEY_ORION_VERSION], 10);
-				if (metaVersion < VERSION) {
-					/* this is fine, user metadata will be migrated when they next log in */
-					var obj = {};
-					obj[KEY_ORION_VERSION] = VERSION;
-					obj[KEY_ORION_DESCRIPTION] = DESCRIPTION_METASTORE;
-					writeJSON(path, obj).then(
-						null,
-						function(error) {
-							throw new Error("Failed to update the metadata file for the workspace at: " + path, error);
-						}
-					);
-				} else if (metaVersion > VERSION) {
-					throw new Error("Cannot run an older server (metadata version " + VERSION + ") on a workspace accessed by a newer server (metadata version " + metaVersion + ")");
-				} else if (isNaN(metaVersion)) {
-					throw new Error("Invalid metadata version ('" + metaVersion + "') read from " + path);
-				}
-			},
-			function(error) {
-				if (error.code === "ENOENT") {
-					/* brand new workspace */
-					var obj = {};
-					obj[KEY_ORION_VERSION] = VERSION;
-					obj[KEY_ORION_DESCRIPTION] = DESCRIPTION_METASTORE;
-					writeJSON(path, obj).then(
-						null,
-						function(error) {
-							throw new Error("Failed to write the metadata file for the new workspace at: " + path, error);
-						}
-					);
-				} else {
-					throw new Error("Failed to access the workspace metadata at: " + path, error);
-				}
+		var path = nodePath.join(options.workspaceDir, FILENAME_METASTORE);
+		fs.readFileAsync(path, 'utf8').then(function(content) {
+			var json = JSON.parse(content);
+			var metaVersion = parseInt(json[KEY_ORION_VERSION], 10);
+			if (metaVersion < VERSION) {
+				/* this is fine, user metadata will be migrated when they next log in */
+				var obj = {};
+				obj = {};
+				obj[KEY_ORION_VERSION] = VERSION;
+				obj[KEY_ORION_DESCRIPTION] = DESCRIPTION_METASTORE;
+				writeJSON(path, obj).then(
+					null,
+					function(error) {
+						throw new Error("Failed to update the metadata file for the workspace at: " + path, error);
+					}
+				);
+			} else if (metaVersion > VERSION) {
+				throw new Error("Cannot run an older server (metadata version " + VERSION + ") on a workspace accessed by a newer server (metadata version " + metaVersion + ")");
+			} else if (isNaN(metaVersion)) {
+				throw new Error("Invalid metadata version ('" + metaVersion + "') read from " + path);
 			}
-		);
+		}, function reject(error) {
+			if (error.code === "ENOENT") {
+				/* brand new workspace */
+				var obj = {};
+				obj[KEY_ORION_VERSION] = VERSION;
+				obj[KEY_ORION_DESCRIPTION] = DESCRIPTION_METASTORE;
+				writeJSON(path, obj).then(
+					null,
+					function(error) {
+						throw new Error("Failed to write the metadata file for the new workspace at: " + path, error);
+					}
+				);
+			} else {
+				throw new Error("Failed to access the workspace metadata at: " + path, error);
+			}
+		});
 	}
-
 	// Used only for single user case (Electron or local debug)
 	options.authenticate = [function(req, res, next) {
-		if (this._isSingleUser) {
-			this.getUser("anonymous", function(err, user) {
-				if (err) {
-					throw new Error("Failed to get 'anonymous' user's metadata");
-				}
-				if (!user) {
-					this.createUser({
-						username: "anonymous",
-						fullname: "anonymous",
-						email: "anonymous",
-						password: "default",
-						properties: {}
-					}, /** @callback */ function(err, user) {
-						// TODO can err possibly happen in this context?
-						req.user = user;
-						next();
-					});
-				} else {
-					req.user = user;
-					next();
-				}
-			}.bind(this));
-		} else {
-			next();
-		}
+		metaUtil.initializeAnonymousUser(req, next, this);
 	}.bind(this)];
 };
 
 Object.assign(FsMetastore.prototype, {
-	
 	createWorkspace: function(userId, workspaceData, callback) {
 		if (!userId) {
 			return callback(new Error('createWorkspace.userId is null'));
@@ -426,43 +470,59 @@ Object.assign(FsMetastore.prototype, {
 		Promise.using(this.lock(userData.username, false), function() {
 			return new Promise(function(resolve, reject) {
 				fs.stat(metadataPath, function(err, stat) {
+					if(stat && this._options.configParams.get('orion.single.user')) {
+						let ret = new Error("Cannot create users in single user mode");
+						ret.code = 400;
+						logger.error(ret);
+						return reject(ret);
+					}
 					if (!err || err.code !== 'ENOENT' || stat) {
-						err = err && err.code !== 'ENOENT' ? err : new Error("User already exists");
-						logger.error(err);
-						return reject(err);
+						let ret = err && err.code !== 'ENOENT' ? err : new Error("User already exists");
+						logger.error(ret);
+						return reject(ret);
 					}
 							
-					var userProperty = {};
-//					userData.password && (userProperty.Password = userData.password); //TODO password need to be pbewithmd5anddes encrypted
-					userData.oauth && (userProperty.OAuth = userData.oauth);
-					userData.email && (userProperty.Email = userData.email);
+					var userProperty = Object.create(null);
+					if(userData.password) {
+						userProperty.Password = cryptoUtil.encrypt(userData.password, "");
+					}
+					if(userData.oauth) {
+						userProperty.OAuth = userData.oauth;
+					}
+					if(userData.email) {
+						userProperty.Email = userData.email;
+					}
 					userProperty.AccountCreationTimestamp = Date.now();
 					userProperty.UniqueId = userData.username;
-					
-					// give the user access to their own user profile
 					userProperty.UserRights = accessRights.createUserAccess(userData.username);
 					userProperty.UserRightsVersion = accessRights.getCurrentVersion();
-					var userJson = {
-						OrionVersion: VERSION,
-						UniqueId: userData.username,
-						UserName: userData.username,
-						FullName: userData.fullname,
-						WorkspaceIds:[],
-						Properties: userProperty
-					};
-				 	this._updateUserMetadata(userData.username, userJson, function(error) {
-						if (error) {
-							return reject(error);
-						}
-						resolve({
-							username: userData.username,
-							email: userData.email,
-							fullname: userData.username,
-							oauth: userData.oauth,
-							properties: userProperty,
-							workspaces:[]
-						}); // TODO successful case needs to return user data including isAuthenticated, username, email, authToken for user.js
-					});
+					cryptoUtil.generateAuthToken(48, function(err, token) {
+						var userJson = {
+							OrionVersion: VERSION,
+							UniqueId: userData.username,
+							UserName: userData.username,
+							FullName: userData.fullname,
+							authToken: token,
+							emailConfirmed: false,
+							WorkspaceIds:[],
+							Properties: userProperty
+						};
+						 this._updateUserMetadata(userData.username, userJson, function(error) {
+							if (error) {
+								return reject(error);
+							}
+							resolve({
+								username: userData.username,
+								email: userData.email,
+								fullname: userData.username,
+								oauth: userData.oauth,
+								properties: userProperty,
+								authToken: token,
+								emailConfirmed: userJson.emailConfirmed,
+								workspaces:[]
+							});
+						});
+					}.bind(this));
 				}.bind(this));
 			}.bind(this));
 		}.bind(this)).then(
@@ -488,6 +548,7 @@ Object.assign(FsMetastore.prototype, {
 							fullname: metadata.FullName,
 							oauth: metadata.Properties.OAuth,
 							properties: metadata.Properties,
+							emailConfirmed: Boolean(metadata.emailConfirmed || metadata.isAuthenticated),
 							login_timestamp: new Date(parseInt(metadata.Properties.LastLoginTimestamp, 10)),
 							disk_usage: metadata.Properties.DiskUsage,
 							disk_usage_timestamp: new Date(parseInt(metadata.Properties.DiskUsageTimestamp, 10)),
@@ -519,15 +580,17 @@ Object.assign(FsMetastore.prototype, {
 					
 					// userData.properties contains all the properties, not only the ones that are changed, 
 					// because of locking, it's safe to say the properties hasn't been changed by other operations
-					metadata.Properties = userData.properties;
-					// update other userData 
+					metadata.Properties = userData.properties || Object.create(null);
 					userData.fullname && (metadata.FullName = userData.fullname);
 					userData.password && (metadata.Properties.Password = userData.password);  // TODO need to encrypt password
 					userData.email && (metadata.Properties.Email = userData.email);
-					userData.login_timestamp && (metadata.Properties.LastLoginTimestamp = userData.login_timestamp.getTime());
+					if(userData.login_timestamp) {
+						metadata.Properties.LastLoginTimestamp = userData.login_timestamp;
+						if(typeof userData.login_timestamp.getTime === 'function') {
+							metadata.Properties.LastLoginTimestamp = userData.login_timestamp.getTime();
+						}
+					}
 					userData.username && (metadata.UserName = userData.username);
-		
-					// TODO update isAuthenticated
 		
 					this._updateUserMetadata(id, metadata, function(error) {
 						if (error) {
@@ -545,9 +608,29 @@ Object.assign(FsMetastore.prototype, {
 		);
 	},
 
-	/** @callback */
+	/** 
+	 * Deletes the given user and calls the callback. If the server is launched in single user mode
+	 * the call immediately callsback with an error. The default single user mode user cannot delete themselves.
+	 * @param {string} id The user id to delete
+	 * @param {fn(err)} callback The function callback
+	 * @callback 
+	 */
 	deleteUser: function(id, callback) {
-		callback(new Error("Not implemented"));
+		if(this._options.configParams.get('orion.single.user')) {
+			return callback(new Error("The default user cannot be deleted in single user mode"));
+		}
+		let userLocation = getUserRootLocation(this._options, id);
+		fs.access(userLocation, (err) => {
+			if(err) {
+				return callback(err);
+			}
+			rimraf(userLocation, (err) => {
+				if(err) {
+					return callback(err);
+				}
+				callback();
+			});
+		});
 	},
 	
 	/**
@@ -570,9 +653,14 @@ Object.assign(FsMetastore.prototype, {
 
 	/** @callback */
 	getAllUsers: function(start, rows, callback) {
-		this.getUser("anonymous", function(err, user) {
-			callback(err, user ? [user] : user);
-		});
+		if(typeof this._options.workspaceDir === 'string') {
+			if(this._isSingleUser) {
+				return this.getUser("anonymous", function(err, user) {
+					callback(err, user ? [user] : user);
+				});
+			}
+		}
+		return callback(null, []);
 	},
 	
 	/** @callback */
@@ -586,8 +674,34 @@ Object.assign(FsMetastore.prototype, {
 	},
 	
 	/** @callback */
-	confirmEmail: function(authToken, callback) {
-		callback(new Error("Not implemented"));
+	confirmEmail: function(user, authToken, callback) {
+		Promise.using(this.lock(id, false), function() {
+			return new Promise(function(resolve, reject) {
+				this._readUserMetadata(user.username, function(error, metadata) {
+					if (error) {
+						return callback(error);
+					}
+					if(metadata.emailConfirmed) {
+						return callback(new Error("Email is already confirmed."));
+					}
+					if(typeof authToken === 'string' && authToken.length > 0 && authToken === metadata.authToken) {
+						metadata.emailConfirmed = true;
+						return this._updateUserMetadata(id, metadata, function(error) {
+							if (error) {
+								return callback(error);
+							}
+							callback();
+						});
+					}
+					callback(new Error("Confirmation authentication tokens do not match."));
+				}.bind(this));
+			}.bind(this));
+		}.bind(this)).then(
+			function(result) {
+				callback(null, result);
+			},
+			callback /* error case */
+		);
 	},
 	
 	createRenameDeleteProject: function(workspaceId, projectInfo) {

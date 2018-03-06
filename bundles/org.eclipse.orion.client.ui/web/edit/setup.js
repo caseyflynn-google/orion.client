@@ -1,6 +1,6 @@
 /*******************************************************************************
  * @license
- * Copyright (c) 2010, 2017 IBM Corporation and others.
+ * Copyright (c) 2010, 2018 IBM Corporation and others.
  * All rights reserved. This program and the accompanying materials are made
  * available under the terms of the Eclipse Public License v1.0
  * (http://www.eclipse.org/legal/epl-v10.html), and the Eclipse Distribution
@@ -128,6 +128,7 @@ objects.mixin(MenuBar.prototype, {
 		var editMenuBar = document.createElement("ul"); //$NON-NLS-0$
 		var menuBarScope = editMenuBar.id = this.menuBarActionScope;
 		editMenuBar.setAttribute("role", "menubar");
+		editMenuBar.style.outline = "none";
 		var menuBar = new mMenuBar.MenuBar({
 			dropdown: editMenuBar,
 		});
@@ -1218,7 +1219,7 @@ objects.mixin(EditorViewer.prototype, {
 								inputManager.removeEventListener("InputChanged", this.loadComplete);
 								that.tabWidget.closeTab(metadata, false);
 							}.bind(this));
-							inputManager.setInput(newLocation || metadata.WorkspaceLocation || fileClient.fileServiceRootURL(metadata.Location));
+							inputManager.setInput(uriTemplate.expand({resource: newLocation || metadata.WorkspaceLocation || fileClient.fileServiceRootURL(metadata.Location)}));
 						} else {
 							that.tabWidget.closeTab(metadata, false);
 						}
@@ -1233,7 +1234,7 @@ objects.mixin(EditorViewer.prototype, {
 							inputManager.removeEventListener("InputChanged", this.loadComplete);
 							that.tabWidget.closeTab(metadata, false);
 						}.bind(this));
-						inputManager.setInput(item.result && item.result.Location || metadata.WorkspaceLocation || fileClient.fileServiceRootURL(selectedMetadata.Location));
+						inputManager.setInput(uriTemplate.expand({resource: item.result && item.result.Location || metadata.WorkspaceLocation || fileClient.fileServiceRootURL(selectedMetadata.Location)}));
 					} else if (that.tabWidget.editorTabs.hasOwnProperty(sourceLocation)) {
 						that.tabWidget.closeTab(metadata, false);
 					}
@@ -1485,7 +1486,7 @@ objects.mixin(EditorViewer.prototype, {
 		// Remove duplicate events
 		for (var i = 0; i < pendingEvents.length; i++) {
 			var duplicate = false;
-			for (var j = 0; j < i; i++) {
+			for (var j = 0; j < i; j++) {
 				if (pendingEvents[i].textModelChangedEvent === pendingEvents[j].textModelChangedEvent) {
 					duplicate = true;
 				}

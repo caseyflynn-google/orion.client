@@ -1,6 +1,6 @@
 /*******************************************************************************
  * @license
- * Copyright (c) 2010, 2017 IBM Corporation and others.
+ * Copyright (c) 2010, 2018 IBM Corporation and others.
  * All rights reserved. This program and the accompanying materials are made
  * available under the terms of the Eclipse Public License v1.0
  * (http://www.eclipse.org/legal/epl-v10.html), and the Eclipse Distribution
@@ -21,8 +21,9 @@ define([
 	'orion/PageUtil',
 	'orion/editor/textModelFactory',
 	'orion/formatter',
+	'lsp/languageServerRegistry',
 	'orion/metrics'
-], function(messages, mNavigatorRenderer, i18nUtil, Deferred, EventTarget, objects, PageUtil, mTextModelFactory, mFormatter, mMetrics) {
+], function(messages, mNavigatorRenderer, i18nUtil, Deferred, EventTarget, objects, PageUtil, mTextModelFactory, mFormatter, mLanguageServerRegistry, mMetrics) {
 
 	function Idle(options){
 		this._document = options.document || document;
@@ -147,6 +148,7 @@ define([
 		this.generalPreferences = options.generalPreferences || {};
 		this.isEditorTabsEnabled = options.isEditorTabsEnabled || false;
 		this._input = this._title = "";
+		this.languageServerRegistry = new mLanguageServerRegistry.LanguageServerRegistry(this.serviceRegistry, options.problemsServiceID || "orion.core.marker"); //$NON-NLS-0$
 		if (this.fileClient) {
 			this.fileClient.addEventListener("Changed", function(evt) { //$NON-NLS-0$
 				if (this._fileMetadata && this._fileMetadata._saving) {
@@ -453,6 +455,12 @@ define([
 					}
 					if (that.postSave) {
 						that.postSave(closing);
+					}
+					// get the lsp service matching the current content type
+					var lspLanguageServer = that.languageServerRegistry.getServerByContentType(that.getContentType());
+					if (lspLanguageServer) {
+						var text = lspLanguageServer.includeTextOnSave() ? that.getEditor().getText() : undefined;
+						lspLanguageServer.didSave(that.getFileMetadata().Location, text);
 					}
 					return done(result);
 				}
@@ -776,7 +784,7 @@ define([
 			this._logMetrics("open"); //$NON-NLS-0$
 			this.dispatchEvent(evt);
 			this.editor = editor = evt.editor;
-			this._formatter = new mFormatter.Formatter(this.serviceRegistry, this, editor);
+			this._formatter = new mFormatter.Formatter(this.serviceRegistry, this, editor, this.languageServerRegistry);
 			if (!isDir) {
 				if (!noSetInput) {
 					editor.setInput(title, null, contents);
